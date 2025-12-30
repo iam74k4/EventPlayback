@@ -1,0 +1,128 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Release on tags like v1.0.0
+  workflow_dispatch:  # Manual execution also available
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write  # Required for uploading to Releases
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~\AppData\Local\pip\Cache
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Extract version from tag or set default
+      id: version
+      run: |
+        if ($env:GITHUB_REF -like 'refs/tags/v*') {
+          $version = $env:GITHUB_REF -replace 'refs/tags/v', ''
+        } else {
+          $version = "dev"
+        }
+        echo "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      shell: pwsh
+      
+    - name: Validate version format
+      run: |
+        $version = "${{ steps.version.outputs.version }}"
+        # Allow "dev" for manual builds
+        if ($version -eq "dev") {
+          Write-Host "Using development version: $version"
+          exit 0
+        }
+        # Validate semantic versioning format (MAJOR.MINOR.PATCH)
+        if ($version -notmatch '^\d+\.\d+\.\d+$') {
+          Write-Error "Invalid version format: $version"
+          Write-Error "Expected format: MAJOR.MINOR.PATCH (e.g., 1.0.0)"
+          exit 1
+        }
+        # Validate version components are non-negative
+        $parts = $version -split '\.'
+        $major = [int]$parts[0]
+        $minor = [int]$parts[1]
+        $patch = [int]$parts[2]
+        if ($major -lt 0 -or $minor -lt 0 -or $patch -lt 0) {
+          Write-Error "Version components must be non-negative: $version"
+          exit 1
+        }
+        Write-Host "Version format validated: $version"
+      shell: pwsh
+      
+    - name: Build executable
+      run: |
+        $version = "${{ steps.version.outputs.version }}"
+        $env:EVENTPLAYBACK_VERSION = $version
+        pyinstaller --onefile --windowed --name EventPlayback main.py
+      env:
+        EVENTPLAYBACK_VERSION: ${{ steps.version.outputs.version }}
+        
+    - name: Verify executable
+      run: |
+        $exe = "dist/EventPlayback.exe"
+        if (-not (Test-Path $exe)) {
+          Write-Error "Executable file not found!"
+          exit 1
+        }
+        $fileInfo = Get-Item $exe
+        Write-Host "Executable built successfully"
+        Write-Host "File size: $($fileInfo.Length) bytes"
+        Write-Host "Version: ${{ steps.version.outputs.version }}"
+        # Verify file is not empty
+        if ($fileInfo.Length -lt 1024) {
+          Write-Error "Executable file is too small, build may have failed!"
+          exit 1
+        }
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: EventPlayback-exe
+        path: dist/EventPlayback.exe
+        retention-days: 30
+        if-no-files-found: error
+        
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dist/EventPlayback.exe
+        fail_on_unmatched_files: true
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ steps.version.outputs.version }}
+        body: |
+          ## EventPlayback ${{ steps.version.outputs.version }}
+          
+          ### Download
+          - Download `EventPlayback.exe` and run it
+          
+          ### Changes
+          - Automated build release
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
