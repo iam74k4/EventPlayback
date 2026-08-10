@@ -60,17 +60,20 @@ class PlaybackEngine:
 
         completed = True
         try:
-            iteration = 0
-            while not cancel.is_set():
-                iteration += 1
-                if not self._play_once(events, cancel):
-                    completed = False
-                    break
-                if loops > 0 and iteration >= loops:
-                    break
-                if loop_delay > 0 and self._clock.wait(loop_delay, cancel):
-                    completed = False
-                    break
+            # Ask the platform for the timer resolution this needs, and give it
+            # back as soon as the run is over.
+            with self._clock.precision_scope():
+                iteration = 0
+                while not cancel.is_set():
+                    iteration += 1
+                    if not self._play_once(events, cancel):
+                        completed = False
+                        break
+                    if loops > 0 and iteration >= loops:
+                        break
+                    if loop_delay > 0 and self._clock.wait(loop_delay, cancel):
+                        completed = False
+                        break
         finally:
             # Whether we finished or were interrupted mid-chord, nothing may be
             # left held down: a stuck Ctrl or mouse button would otherwise

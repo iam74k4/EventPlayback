@@ -37,6 +37,9 @@ class Settings:
     appearance_mode: str = "dark"
     last_directory: str = ""
     hotkeys: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_HOTKEYS))
+    #: Withhold hotkeys from the focused application. Windows only, and needs
+    #: the optional ``keyboard`` dependency; ignored elsewhere.
+    suppress_hotkeys: bool = False
 
     # -- validation -----------------------------------------------------
     def normalized(self) -> Settings:
@@ -58,6 +61,7 @@ class Settings:
             appearance_mode=appearance,
             last_directory=directory,
             hotkeys=hotkeys,
+            suppress_hotkeys=bool(self.suppress_hotkeys),
         )
 
     @property

@@ -6,10 +6,60 @@ import logging
 from collections.abc import Callable
 
 from ..core.backends.base import HotkeyListener
+from ..platform_support import IS_WINDOWS
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HotkeyManager"]
+__all__ = ["HotkeyManager", "create_listener", "select_hotkey_backend"]
+
+
+def select_hotkey_backend(*, suppress: bool, is_windows: bool, keyboard_available: bool) -> str:
+    """Decide which backend serves the hotkeys.
+
+    ``pynput`` is the default because it needs no extra dependency and no
+    elevated privileges. ``keyboard`` is chosen only when the user asked for
+    hotkeys to be withheld from other applications, which is the one thing
+    pynput cannot do, and only on Windows: elsewhere the library needs root.
+
+    Returns:
+        Either ``"keyboard"`` or ``"pynput"``.
+    """
+    if suppress and is_windows and keyboard_available:
+        return "keyboard"
+    return "pynput"
+
+
+def _keyboard_available() -> bool:
+    from importlib.util import find_spec
+
+    try:
+        return find_spec("keyboard") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def create_listener(*, suppress: bool = False) -> tuple[HotkeyListener, bool]:
+    """Build the hotkey listener that best matches what was asked for.
+
+    Returns:
+        The listener, and whether it will actually suppress hotkeys. The two
+        can disagree: suppression is silently unavailable off Windows or
+        without the optional dependency, and the caller should say so.
+    """
+    choice = select_hotkey_backend(
+        suppress=suppress, is_windows=IS_WINDOWS, keyboard_available=_keyboard_available()
+    )
+    if choice == "keyboard":
+        try:
+            from ..core.backends.keyboard_backend import KeyboardHotkeyListener
+
+            return KeyboardHotkeyListener(suppress=True), True
+        except ImportError:
+            logger.info("The keyboard library is unavailable; hotkeys will not be suppressed")
+
+    from ..core.backends.pynput_backend import PynputHotkeyListener
+
+    return PynputHotkeyListener(), False
 
 
 class HotkeyManager:

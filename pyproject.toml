@@ -15,6 +15,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Lets hotkeys be withheld from the focused application. Windows only: the
+# library needs root elsewhere, and pynput already covers the rest.
+suppress = [
+    "keyboard>=0.13.5; sys_platform == 'win32'",
+]
 dev = [
     "pytest>=7.4",
     "ruff>=0.5",

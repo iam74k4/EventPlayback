@@ -15,16 +15,12 @@ import customtkinter as ctk
 
 from .. import __version__
 from ..core.backends.base import RealClock
-from ..core.backends.pynput_backend import (
-    PynputHotkeyListener,
-    PynputSource,
-    PynputSynthesizer,
-)
+from ..core.backends.pynput_backend import PynputSource, PynputSynthesizer
 from ..core.macro import Macro
 from ..core.player import Player
 from ..core.recorder import Recorder
 from ..platform_support import permission_hint
-from ..services.hotkeys import HotkeyManager
+from ..services.hotkeys import HotkeyManager, create_listener
 from ..services.settings import Settings
 from ..services.storage import MacroFileError, load_macro, save_macro
 from .state import AppState, ViewModel, build_view, parse_loop_count
@@ -69,8 +65,9 @@ class App(ctk.CTk):
         self.player.on_complete = lambda: self.after(0, self._on_playback_complete)
         self.player.on_error = lambda message: self.after(0, self._toast, message)
 
+        listener, self.hotkeys_suppressed = create_listener(suppress=self.settings.suppress_hotkeys)
         self.hotkeys = HotkeyManager(
-            PynputHotkeyListener(),
+            listener,
             on_error=lambda message: self.after(0, self._toast, f"Hotkeys unavailable: {message}"),
         )
         self.hotkeys.register("record", lambda: self.after(0, self.toggle_record))
@@ -78,6 +75,9 @@ class App(ctk.CTk):
         self.hotkeys.register("stop", lambda: self.after(0, self.request_stop))
         if not self.hotkeys.apply(self.settings.hotkeys):
             self.after(100, self._toast, permission_hint())
+        elif self.settings.suppress_hotkeys and not self.hotkeys_suppressed:
+            # Asked for, but unavailable on this platform or without the extra.
+            self.after(100, self._toast, "Hotkey suppression needs Windows and 'keyboard'")
 
         self.protocol("WM_DELETE_WINDOW", self.close)
         self._render()

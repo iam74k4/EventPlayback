@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,48 @@ def enable_dpi_awareness() -> None:
         ctypes.windll.user32.SetProcessDPIAware()  # System DPI Aware (fallback)
     except Exception:
         logger.debug("Could not enable DPI awareness", exc_info=True)
+
+
+@contextmanager
+def high_resolution_timer() -> Iterator[bool]:
+    """Raise this process's timer resolution to 1 ms for the duration of the block.
+
+    Windows defaults to a ~15.6 ms scheduling tick, and a blocking wait is
+    rounded up to it. Replaying a macro recorded at 20 ms resolution would then
+    round every gap to 31 ms, so playback must ask for a finer tick and give it
+    back afterwards. Timer resolution is per-process on Windows 10 2004 and
+    later, so this does not affect the rest of the system.
+
+    Yields:
+        Whether fine-grained waits are available. macOS and Linux already
+        provide them, so this is a no-op yielding ``True`` there.
+    """
+    if not IS_WINDOWS:
+        yield True
+        return
+
+    import ctypes
+
+    TIMERR_NOERROR = 0
+    period_ms = 1
+    try:
+        winmm = ctypes.WinDLL("winmm")
+        granted = winmm.timeBeginPeriod(period_ms) == TIMERR_NOERROR
+    except Exception:
+        logger.warning("Could not raise the timer resolution; playback timing may be coarse")
+        yield False
+        return
+
+    if not granted:
+        logger.warning("The system refused a %d ms timer resolution", period_ms)
+    try:
+        yield granted
+    finally:
+        if granted:
+            try:
+                winmm.timeEndPeriod(period_ms)
+            except Exception:
+                logger.debug("timeEndPeriod failed", exc_info=True)
 
 
 def config_dir() -> Path:

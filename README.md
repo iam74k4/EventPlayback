@@ -74,6 +74,13 @@ Or install the package itself, which also provides an `eventplayback` command:
 pip install -e .
 ```
 
+To additionally withhold hotkeys from other applications (Windows only, see
+[Hotkeys](#hotkeys)):
+
+```bash
+pip install -e ".[suppress]"
+```
+
 ## Usage
 
 ```bash
@@ -106,7 +113,21 @@ python -m eventplayback   # requires the package to be installed
 
 Hotkeys are global and work while other applications have focus. Whichever keys
 are bound are automatically excluded from recordings, so pressing F9 to stop
-does not end up in the macro.
+does not end up in the macro. Combinations such as `ctrl+shift+f9` are accepted.
+
+### Suppression
+
+By default a hotkey is observed but still reaches the focused application, so
+F9 also arrives wherever you were working. Setting `suppress_hotkeys` to `true`
+swallows the key instead:
+
+```bash
+pip install "eventplayback[suppress]"   # installs the optional keyboard library
+```
+
+This requires Windows. On macOS and Linux the setting is ignored and the
+application says so on startup, because the library it relies on needs root
+privileges there.
 
 ## Settings
 
@@ -125,7 +146,8 @@ Settings are stored as JSON and loaded at startup:
   "always_on_top": true,
   "appearance_mode": "dark",
   "last_directory": "",
-  "hotkeys": { "record": "f9", "play": "f10", "stop": "esc" }
+  "hotkeys": { "record": "f9", "play": "f10", "stop": "esc" },
+  "suppress_hotkeys": false
 }
 ```
 
@@ -170,6 +192,7 @@ src/eventplayback/
 │   └── backends/
 │       ├── base.py          InputSource / InputSynthesizer / HotkeyListener / Clock
 │       ├── pynput_backend.py  The only module that imports pynput
+│       ├── keyboard_backend.py  Optional, Windows: suppressible hotkeys
 │       └── fake.py          In-memory backends and a virtual clock, for tests
 ├── services/                Settings, macro files, hotkey registration
 ├── ui/
@@ -207,6 +230,18 @@ pynput or customtkinter.
   not supported
 - Check if other applications are using the same hotkeys
 - Rebind the conflicting hotkey in `settings.json`
+
+### Hotkeys Also Reach the Application Underneath
+
+That is the default. See [Suppression](#suppression).
+
+### Playback Timing Is Uneven
+
+Playback asks Windows for a 1 ms timer tick while it runs, because the default
+~15.6 ms tick would round a 20 ms gap up to 31 ms. If the request is refused,
+the application compensates by busy-waiting through the last tick, which is
+accurate but uses more CPU for the duration of the replay. Both cases are
+logged at startup of the run.
 
 ### Recording Not Working Properly
 

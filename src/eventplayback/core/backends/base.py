@@ -9,8 +9,11 @@ from __future__ import annotations
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
+
+from ...platform_support import high_resolution_timer
 
 __all__ = [
     "Clock",
@@ -94,18 +97,48 @@ class Clock(ABC):
             ``True`` if the wait was cancelled, ``False`` if it ran to term.
         """
 
+    def precision_scope(self) -> AbstractContextManager[None]:
+        """Hold whatever the platform needs for accurate waits.
+
+        Entered around a playback run. The default does nothing, which is what
+        a virtual clock wants.
+        """
+        return nullcontext()
+
 
 class RealClock(Clock):
     """Wall-clock implementation used by the application.
 
-    ``threading.Event.wait`` is subject to the OS timer granularity (~15 ms on
-    Windows by default), which is enough to smear a macro that was recorded at
-    20 ms resolution. The final few milliseconds are therefore spun out, so
-    waits stay both accurate and promptly cancellable.
+    A blocking wait only resolves to the OS scheduling tick, which is too
+    coarse for a macro recorded at 20 ms resolution. Two things keep playback
+    accurate: :meth:`precision_scope` asks the OS for a 1 ms tick, and the last
+    couple of milliseconds before each deadline are spun out rather than slept
+    through, so waits stay both accurate and promptly cancellable.
     """
 
     #: How long before the deadline to switch from sleeping to spinning.
-    SPIN_THRESHOLD = 0.002
+    DEFAULT_SPIN = 0.002
+    #: Used when the OS will not grant a fine timer tick. Spinning through a
+    #: whole tick costs CPU, but only while a macro is actually being replayed,
+    #: and it is the difference between a faithful replay and a smeared one.
+    FALLBACK_SPIN = 0.016
+
+    def __init__(self) -> None:
+        self._spin = self.DEFAULT_SPIN
+
+    @property
+    def spin_threshold(self) -> float:
+        return self._spin
+
+    @contextmanager
+    def precision_scope(self) -> Iterator[None]:
+        with high_resolution_timer() as fine_grained:
+            previous = self._spin
+            self._spin = self.DEFAULT_SPIN if fine_grained else self.FALLBACK_SPIN
+            try:
+                yield
+            finally:
+                self._spin = previous
 
     def now(self) -> float:
         return time.perf_counter()
@@ -114,7 +147,7 @@ class RealClock(Clock):
         if seconds <= 0:
             return cancel.is_set()
         deadline = time.perf_counter() + seconds
-        coarse = seconds - self.SPIN_THRESHOLD
+        coarse = seconds - self._spin
         if coarse > 0 and cancel.wait(coarse):
             return True
         while time.perf_counter() < deadline:
