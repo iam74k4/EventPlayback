@@ -38,3 +38,9 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
