@@ -2,25 +2,61 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'  # Release on tags like v1.0.0
+  pull_request:
   workflow_dispatch:  # Manual execution also available
 
 jobs:
-  build:
-    runs-on: windows-latest
-    permissions:
-      contents: write  # Required for uploading to Releases
-    
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+
+    # The test suite covers eventplayback.core, .services and .ui.state, none of
+    # which import pynput or customtkinter, so no display server is needed here.
+    - name: Install test dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest ruff
+
+    - name: Lint
+      run: ruff check .
+
+    - name: Test
+      run: pytest -q
+
+  build:
+    name: Build Windows executable
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write  # Required for uploading to Releases
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        
+
     - name: Cache pip dependencies
       uses: actions/cache@v4
       with:
@@ -28,13 +64,13 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
-          
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
-        
+
     - name: Extract version from tag or set default
       id: version
       run: |
@@ -45,7 +81,7 @@ jobs:
         }
         echo "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       shell: pwsh
-      
+
     - name: Validate version format
       run: |
         $version = "${{ steps.version.outputs.version }}"
@@ -60,26 +96,15 @@ jobs:
           Write-Error "Expected format: MAJOR.MINOR.PATCH (e.g., 1.0.0)"
           exit 1
         }
-        # Validate version components are non-negative
-        $parts = $version -split '\.'
-        $major = [int]$parts[0]
-        $minor = [int]$parts[1]
-        $patch = [int]$parts[2]
-        if ($major -lt 0 -or $minor -lt 0 -or $patch -lt 0) {
-          Write-Error "Version components must be non-negative: $version"
-          exit 1
-        }
         Write-Host "Version format validated: $version"
       shell: pwsh
-      
+
     - name: Build executable
       run: |
-        $version = "${{ steps.version.outputs.version }}"
-        $env:EVENTPLAYBACK_VERSION = $version
-        pyinstaller --onefile --windowed --name EventPlayback main.py
+        pyinstaller --onefile --windowed --paths src --name EventPlayback main.py
       env:
         EVENTPLAYBACK_VERSION: ${{ steps.version.outputs.version }}
-        
+
     - name: Verify executable
       run: |
         $exe = "dist/EventPlayback.exe"
@@ -96,7 +121,7 @@ jobs:
           Write-Error "Executable file is too small, build may have failed!"
           exit 1
         }
-        
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -104,7 +129,7 @@ jobs:
         path: dist/EventPlayback.exe
         retention-days: 30
         if-no-files-found: error
-        
+
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
@@ -115,14 +140,13 @@ jobs:
         name: Release ${{ steps.version.outputs.version }}
         body: |
           ## EventPlayback ${{ steps.version.outputs.version }}
-          
+
           ### Download
           - Download `EventPlayback.exe` and run it
-          
+
           ### Changes
           - Automated build release
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
