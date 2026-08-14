@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eventplayback"
-version = "1.1.0"
+version = "1.2.0"
 description = "A lightweight application for recording and playing back mouse and keyboard input."
 readme = "README.md"
 requires-python = ">=3.10"

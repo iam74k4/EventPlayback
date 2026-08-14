@@ -28,8 +28,10 @@ A lightweight application for recording and playing back mouse and keyboard inpu
 
 - Layered architecture with a GUI- and OS-independent core
 - Minimal dependencies (pynput, customtkinter)
-- Modern dark theme UI
-- Save and load macros in JSON format
+- Light and dark themes, switchable from the settings window
+- In-app settings, including rebinding the hotkeys by pressing them
+- A progress bar and loop counter while a macro replays
+- Save and load macros in JSON format, with a recently-opened list
 - Settings persist between runs (loop count, last directory, hotkeys)
 
 ## Requirements
@@ -97,11 +99,26 @@ python -m eventplayback   # requires the package to be installed
 
 | Button | Function |
 |--------|----------|
-| ● Record | Start recording after a 3-second countdown |
+| ● Record | Start recording after the countdown |
 | ■ Stop | Stop recording/playback, or cancel the countdown |
-| ▶ Play | Start playback after a 3-second countdown |
-| ×[number] | Loop count (0=infinite) |
-| 📂 / 💾 | Load / save a macro |
+| ▶ Play | Start playback after the countdown |
+| ×[number] | Loop count (0 = until stopped, shown as ∞) |
+| Open / ▾ / Save | Load a macro, pick a recent one, or save |
+| ⚙ | Settings |
+
+A coloured dot next to the status word shows what is happening: grey when
+idle, amber during the countdown, red while recording and green while
+replaying. It pulses gently rather than flashing the whole window.
+
+| Shortcut | Function |
+|----------|----------|
+| Ctrl+O | Open a macro |
+| Ctrl+S | Save the macro |
+| Ctrl+, | Open settings |
+| Enter | Play, while the loop field has focus |
+
+These are ordinary shortcuts and only work while the window has focus. The
+hotkeys below are global.
 
 ## Hotkeys
 
@@ -114,6 +131,11 @@ python -m eventplayback   # requires the package to be installed
 Hotkeys are global and work while other applications have focus. Whichever keys
 are bound are automatically excluded from recordings, so pressing F9 to stop
 does not end up in the macro. Combinations such as `ctrl+shift+f9` are accepted.
+
+To change one, open the settings window (⚙ or Ctrl+,), go to the Hotkeys tab,
+click the binding and press the keys you want. Global hotkeys are released
+while that window is open, so pressing F9 rebinds it instead of starting a
+recording.
 
 ### Suppression
 
@@ -131,7 +153,9 @@ privileges there.
 
 ## Settings
 
-Settings are stored as JSON and loaded at startup:
+Everything here can be changed in the settings window (⚙ or Ctrl+,) and takes
+effect immediately; the file is written when the window closes. Editing it by
+hand still works.
 
 | Platform | Location |
 |----------|----------|
@@ -142,14 +166,21 @@ Settings are stored as JSON and loaded at startup:
 ```json
 {
   "loop_count": 1,
+  "loop_delay": 0.0,
   "countdown_seconds": 3,
   "always_on_top": true,
   "appearance_mode": "dark",
   "last_directory": "",
+  "recent_files": [],
   "hotkeys": { "record": "f9", "play": "f10", "stop": "esc" },
   "suppress_hotkeys": false
 }
 ```
+
+`loop_delay` is the pause inserted between repetitions, in seconds.
+`appearance_mode` is `dark`, `light` or `system`. `recent_files` is the
+recently-opened list behind the ▾ button; entries that no longer exist are
+dropped at startup.
 
 Unreadable or out-of-range values fall back to the defaults, so a damaged
 settings file never prevents the application from starting. Hotkeys accept
@@ -196,7 +227,12 @@ src/eventplayback/
 │       └── fake.py          In-memory backends and a virtual clock, for tests
 ├── services/                Settings, macro files, hotkey registration
 ├── ui/
+│   ├── theme.py             Design tokens, as (light, dark) colour pairs
 │   ├── state.py             State -> appearance, as a pure function
+│   ├── keycapture.py        Tk key event -> hotkey string
+│   ├── tooltip.py           Hover labels for the toolbar
+│   ├── banner.py            The message row
+│   ├── settings_dialog.py   The settings window
 │   └── app.py               The customtkinter window
 └── platform_support.py      Everything that has to know which OS this is
 ```
@@ -213,8 +249,11 @@ pytest        # unit tests; no display server required
 ruff check .  # lint
 ```
 
-The test suite exercises `core`, `services` and `ui.state`, none of which import
-pynput or customtkinter.
+The test suite exercises `core`, `services`, `ui.state`, `ui.theme` and
+`ui.keycapture`, none of which import pynput or customtkinter. That is the
+reason the colour palette, the state-to-appearance rules and the key
+translation live outside the widget code: they are the parts worth testing,
+and they can be tested without a display.
 
 ## Notes
 
@@ -229,7 +268,7 @@ pynput or customtkinter.
 - **Linux**: confirm the session is X11 (`echo $XDG_SESSION_TYPE`); Wayland is
   not supported
 - Check if other applications are using the same hotkeys
-- Rebind the conflicting hotkey in `settings.json`
+- Rebind the conflicting hotkey in the settings window (⚙ > Hotkeys)
 
 ### Hotkeys Also Reach the Application Underneath
 
