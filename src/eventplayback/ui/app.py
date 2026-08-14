@@ -53,7 +53,9 @@ class App(ctk.CTk):
     #: How often the playback position is read off the player.
     PLAYBACK_POLL_MS = 60
 
-    MIN_WIDTH = 500
+    #: Longest macro name shown before it is elided. Keeping the label a fixed
+    #: width is what stops a long name from stretching the window.
+    MAX_NAME_CHARS = 22
 
     def __init__(self, settings: Settings | None = None) -> None:
         super().__init__()
@@ -61,7 +63,12 @@ class App(ctk.CTk):
         ctk.set_appearance_mode(self.settings.appearance_mode)
 
         self.title("EventPlayback" if __version__ == "dev" else f"EventPlayback v{__version__}")
-        self.resizable(True, False)
+        # No explicit geometry anywhere: Tk then keeps the window at whatever
+        # the visible rows ask for, growing for the banner and shrinking again
+        # afterwards. Computing it by hand went wrong on a scaled display,
+        # where CustomTkinter re-applies its scaling to any geometry string and
+        # the window doubled in width every time a message appeared.
+        self.resizable(False, False)
         self.attributes("-topmost", self.settings.always_on_top)
         self.configure(fg_color=theme.WINDOW)
 
@@ -115,7 +122,6 @@ class App(ctk.CTk):
 
         self.protocol("WM_DELETE_WINDOW", self.close)
         self._render()
-        self.after(0, self._fit_height)
 
     # -- construction ---------------------------------------------------
     def _build_widgets(self) -> None:
@@ -159,7 +165,7 @@ class App(ctk.CTk):
         # Which macro is loaded, and whether it has unsaved changes. Without
         # this the window gave no clue what the buttons were about to replay.
         self.macro_label = ctk.CTkLabel(
-            header, text="", font=small, text_color=theme.TEXT_MUTED, anchor="e"
+            header, text="", width=160, font=small, text_color=theme.TEXT_MUTED, anchor="e"
         )
         self.macro_label.pack(side="right", padx=(8, 8))
         self._macro_tip = Tooltip(self.macro_label, "")
@@ -374,35 +380,25 @@ class App(ctk.CTk):
 
     def _render_macro_name(self) -> None:
         name = self.macro.name if self.macro.events else ""
+        shown = name if len(name) <= self.MAX_NAME_CHARS else f"{name[: self.MAX_NAME_CHARS - 1]}…"
         marker = " •" if self._dirty else ""
-        self.macro_label.configure(text=f"{name}{marker}")
-        self._macro_tip.set_text("Unsaved changes" if self._dirty else "")
+        self.macro_label.configure(text=f"{shown}{marker}")
+        hint = "Unsaved changes" if self._dirty else ""
+        if shown != name:
+            hint = f"{name} — {hint}" if hint else name
+        self._macro_tip.set_text(hint)
 
     def _render_progress(self, view: ViewModel) -> None:
         if view.progress is None:
             if self._progress_visible:
                 self.progress.pack_forget()
                 self._progress_visible = False
-                self._fit_height()
             return
         self.progress.configure(progress_color=view.progress_color)
         self.progress.set(max(0.0, min(1.0, view.progress)))
         if not self._progress_visible:
             self.progress.pack(fill="x", pady=(8, 0), before=self.info_label)
             self._progress_visible = True
-            self._fit_height()
-
-    def _fit_height(self) -> None:
-        """Grow or shrink to whatever the visible rows need.
-
-        The banner and the progress bar come and go, and a fixed geometry would
-        either clip them or leave a permanent gap where they are not.
-        """
-        self.update_idletasks()
-        width = max(self.winfo_width(), self.MIN_WIDTH)
-        height = self.winfo_reqheight()
-        self.minsize(self.MIN_WIDTH, height)
-        self.geometry(f"{width}x{height}")
 
     def _notify(self, message: str, severity: str = "info") -> None:
         """Show a message in the banner row, below the controls.
@@ -411,7 +407,6 @@ class App(ctk.CTk):
         application is doing, and errors stay until they are dismissed.
         """
         self.banner.show(message, severity)
-        self._fit_height()
 
     # -- pulse ----------------------------------------------------------
     def _start_pulse(self) -> None:

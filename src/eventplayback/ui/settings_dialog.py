@@ -27,9 +27,6 @@ _ACTION_LABELS = {"record": "Record", "play": "Play", "stop": "Stop"}
 class SettingsDialog(ctk.CTkToplevel):
     """Edits ``settings`` in place, calling ``on_change`` with the field name."""
 
-    WIDTH = 400
-    HEIGHT = 330
-
     def __init__(
         self,
         master: ctk.CTk,
@@ -47,13 +44,21 @@ class SettingsDialog(ctk.CTkToplevel):
         self._hotkey_buttons: dict[str, ctk.CTkButton] = {}
 
         self.title("Settings")
-        self.geometry(f"{self.WIDTH}x{self.HEIGHT}")
+        # Sized by its contents, like the main window: a fixed height clipped
+        # the footer buttons as soon as a tab or a font was taller than the
+        # number picked here.
         self.resizable(False, False)
         self.configure(fg_color=theme.WINDOW)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
+        # Built while hidden: the tabs can only be measured against each
+        # other once their widgets are real, and doing it here rather than on
+        # a timer means the dialog never appears at the wrong size first.
+        self.withdraw()
         self._build()
         self._refresh_hotkeys()
+        self._equalise_tabs([self._tabs.tab("General"), self._tabs.tab("Hotkeys")])
+        self.deiconify()
 
         # Sit above the main window and take the keyboard, so a captured key
         # cannot leak into whatever is behind.
@@ -79,6 +84,7 @@ class SettingsDialog(ctk.CTkToplevel):
         tabs.pack(fill="both", expand=True, padx=12, pady=(10, 6))
         tabs.add("General")
         tabs.add("Hotkeys")
+        self._tabs = tabs
 
         self._build_general(tabs.tab("General"))
         self._build_hotkeys(tabs.tab("Hotkeys"))
@@ -119,8 +125,42 @@ class SettingsDialog(ctk.CTkToplevel):
             anchor="w",
         ).grid(row=row, column=0, sticky="w", pady=8)
 
-    def _build_general(self, parent: ctk.CTkFrame) -> None:
+    @staticmethod
+    def _share_columns(parent: ctk.CTkFrame) -> None:
         parent.grid_columnconfigure(1, weight=1)
+
+    #: Grid cells reserved for padding a small tab out to the largest one.
+    #: Both are deliberately empty and outside the range the rows use.
+    _SPACER_ROW = 90
+    _SPACER_COLUMN = 2
+
+    def _equalise_tabs(self, frames: list[ctk.CTkFrame]) -> None:
+        """Pad the smaller tabs out to the largest one.
+
+        Otherwise the dialog changed size when the tab changed, since each tab
+        is only as big as its own content -- and the Hotkeys tab loses a line
+        of explanation on Windows, so the difference is not a fixed number
+        either. Everything here is measured rather than guessed, because
+        ``grid`` works in real pixels while CustomTkinter's own sizes are
+        scaled, and a hard-coded minimum drifts on a scaled display.
+        """
+        self.update_idletasks()
+        widest = max(frame.winfo_reqwidth() for frame in frames)
+        tallest = max(frame.winfo_reqheight() for frame in frames)
+        for frame in frames:
+            missing_height = tallest - frame.winfo_reqheight()
+            if missing_height > 0:
+                frame.grid_rowconfigure(self._SPACER_ROW, minsize=missing_height)
+            missing_width = widest - frame.winfo_reqwidth()
+            if missing_width > 0:
+                # An empty third column, for the same reason the padding row is
+                # empty: nothing spans it, so its minimum is added to the tab's
+                # width outright. Widening a column that real widgets sit in
+                # would instead be absorbed by the rows spanning both of them.
+                frame.grid_columnconfigure(self._SPACER_COLUMN, minsize=missing_width)
+
+    def _build_general(self, parent: ctk.CTkFrame) -> None:
+        self._share_columns(parent)
 
         self._row_label(parent, "Appearance", 0)
         self._appearance = ctk.CTkSegmentedButton(
@@ -132,7 +172,7 @@ class SettingsDialog(ctk.CTkToplevel):
             command=self._set_appearance,
         )
         self._appearance.set(self._settings.appearance_mode.capitalize())
-        self._appearance.grid(row=0, column=1, sticky="e", pady=8)
+        self._appearance.grid(row=0, column=1, sticky="e", pady=8, padx=(12, 0))
 
         self._row_label(parent, "Always on top", 1)
         self._on_top = ctk.CTkSwitch(
@@ -144,11 +184,11 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         if self._settings.always_on_top:
             self._on_top.select()
-        self._on_top.grid(row=1, column=1, sticky="e", pady=8)
+        self._on_top.grid(row=1, column=1, sticky="e", pady=8, padx=(12, 0))
 
         self._row_label(parent, "Countdown", 2)
         countdown = ctk.CTkFrame(parent, fg_color="transparent")
-        countdown.grid(row=2, column=1, sticky="e", pady=8)
+        countdown.grid(row=2, column=1, sticky="e", pady=8, padx=(12, 0))
         self._countdown_value = ctk.CTkLabel(
             countdown,
             text="",
@@ -172,9 +212,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self._countdown.pack(side="right", padx=(0, 8))
         self._show_countdown(self._settings.countdown_seconds)
 
-        self._row_label(parent, "Delay between loops", 3)
+        self._row_label(parent, "Loop delay", 3)
         delay = ctk.CTkFrame(parent, fg_color="transparent")
-        delay.grid(row=3, column=1, sticky="e", pady=8)
+        delay.grid(row=3, column=1, sticky="e", pady=8, padx=(12, 0))
         self._delay_value = ctk.CTkLabel(
             delay,
             text="",
@@ -199,7 +239,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._show_delay(self._settings.loop_delay)
 
     def _build_hotkeys(self, parent: ctk.CTkFrame) -> None:
-        parent.grid_columnconfigure(1, weight=1)
+        self._share_columns(parent)
 
         for row, (action, label) in enumerate(_ACTION_LABELS.items()):
             self._row_label(parent, label, row)
@@ -215,7 +255,7 @@ class SettingsDialog(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=theme.FONT_SIZE_SM),
                 command=lambda name=action: self._toggle_capture(name),
             )
-            button.grid(row=row, column=1, sticky="e", pady=8)
+            button.grid(row=row, column=1, sticky="e", pady=8, padx=(12, 0))
             self._hotkey_buttons[action] = button
 
         self._hotkey_hint = ctk.CTkLabel(

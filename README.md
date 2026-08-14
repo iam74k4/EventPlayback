@@ -6,6 +6,8 @@
 
 A lightweight application for recording and playing back mouse and keyboard input.
 
+![The EventPlayback window](docs/images/window-dark.png)
+
 ## Table of Contents
 
 - [Features](#features)
@@ -14,6 +16,7 @@ A lightweight application for recording and playing back mouse and keyboard inpu
 - [Installation](#installation)
 - [Usage](#usage)
 - [Controls](#controls)
+- [Interface](#interface)
 - [Hotkeys](#hotkeys)
 - [Settings](#settings)
 - [File Format](#file-format)
@@ -26,13 +29,16 @@ A lightweight application for recording and playing back mouse and keyboard inpu
 
 ## Features
 
-- Layered architecture with a GUI- and OS-independent core
-- Minimal dependencies (pynput, customtkinter)
-- Light and dark themes, switchable from the settings window
-- In-app settings, including rebinding the hotkeys by pressing them
-- A progress bar and loop counter while a macro replays
-- Save and load macros in JSON format, with a recently-opened list
-- Settings persist between runs (loop count, last directory, hotkeys)
+| | |
+|---|---|
+| **Record and replay** | Captures mouse movement, clicks, scrolling and keystrokes, and replays them with the original timing |
+| **Repeat** | Any number of repetitions, or until you stop it, with an optional pause between them |
+| **Global hotkeys** | F9, F10 and Escape work while another application has focus, and can be rebound by pressing the keys you want |
+| **Visible progress** | A progress bar and a loop counter while a macro replays, and a countdown before recording or playback starts |
+| **Light and dark** | Follows the system theme, or is pinned to either from the settings window |
+| **Macro files** | Saved as readable JSON, with a recently-opened list and a prompt before an unsaved recording is lost |
+| **Small** | Two dependencies (pynput, customtkinter), a single executable on Windows |
+| **Testable** | A layered architecture whose core knows nothing about the GUI or the operating system |
 
 ## Requirements
 
@@ -106,10 +112,6 @@ python -m eventplayback   # requires the package to be installed
 | Open / ▾ / Save | Load a macro, pick a recent one, or save |
 | ⚙ | Settings |
 
-A coloured dot next to the status word shows what is happening: grey when
-idle, amber during the countdown, red while recording and green while
-replaying. It pulses gently rather than flashing the whole window.
-
 | Shortcut | Function |
 |----------|----------|
 | Ctrl+O | Open a macro |
@@ -119,6 +121,57 @@ replaying. It pulses gently rather than flashing the whole window.
 
 These are ordinary shortcuts and only work while the window has focus. The
 hotkeys below are global.
+
+## Interface
+
+The window is one screen: what is happening, the controls, and the totals.
+Rows appear only when they have something to say, and the window resizes to
+suit, so nothing is a permanent empty space.
+
+```
+┌──────────────────────────────────────────────────┐
+│ ● Idle                       login-sequence •  ⚙ │  state · macro · settings
+│ ● Record   ■ Stop   ▶ Play   ×[1]  Open ▾  Save  │  controls
+│ ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │  progress, while running
+│ 40 events · 9.8s · loop 2/5                      │  totals
+│ ! Accessibility permission is required.        ✕ │  messages, when there are any
+└──────────────────────────────────────────────────┘
+```
+
+### States
+
+A coloured dot carries the state, pulsing gently rather than flashing the
+whole window. Recording counts events as they arrive; playback fills the bar
+across each repetition; the countdown empties it as the wait runs out.
+
+![Recording, playing and counting down](docs/images/states.png)
+
+| Dot | State |
+|-----|-------|
+| Grey | Idle |
+| Amber | Counting down before recording or playback |
+| Red | Recording |
+| Green | Replaying |
+
+### Messages
+
+Messages have their own row, so they never cover up what the application is
+doing. Confirmations fade after a few seconds; something you need to act on,
+such as a missing permission, waits until you dismiss it.
+
+![An error message below the controls](docs/images/banner.png)
+
+### Settings
+
+![The General tab](docs/images/settings-general.png)
+![The Hotkeys tab](docs/images/settings-hotkeys.png)
+
+### Light and dark
+
+`appearance_mode` can follow the system or be pinned. Colours are defined once
+in `ui/theme.py` as light/dark pairs, so both modes stay in step.
+
+![The window in the light theme](docs/images/window-light.png)
 
 ## Hotkeys
 
