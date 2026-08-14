@@ -37,6 +37,12 @@ _DISMISS_MS: dict[str, int | None] = {
 class Banner(ctk.CTkFrame):
     """A dismissable, severity-coloured message row."""
 
+    #: Where the message wraps. Without a limit a long one -- the macOS
+    #: permission hint, say -- stretches the whole window sideways to fit on a
+    #: single line. In CustomTkinter's units, so it holds at any display
+    #: scaling, and comfortably inside the width the toolbar already asks for.
+    WRAP_WIDTH = 400
+
     def __init__(self, master: ctk.CTkBaseClass | ctk.CTk) -> None:
         super().__init__(master, corner_radius=theme.RADIUS_SM, fg_color=theme.SURFACE, height=28)
         self._token = 0
@@ -47,7 +53,12 @@ class Banner(ctk.CTkFrame):
         self._icon.pack(side="left", padx=(8, 0))
 
         self._label = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=theme.FONT_SIZE_MD), anchor="w", justify="left"
+            self,
+            text="",
+            font=ctk.CTkFont(size=theme.FONT_SIZE_MD),
+            anchor="w",
+            justify="left",
+            wraplength=self.WRAP_WIDTH,
         )
         self._label.pack(side="left", fill="x", expand=True, padx=(6, 4), pady=4)
 

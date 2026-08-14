@@ -30,7 +30,7 @@ from . import theme
 from .banner import Banner
 from .keycapture import describe_binding
 from .settings_dialog import SettingsDialog
-from .state import AppState, ViewModel, build_view, format_loop_label, parse_loop_count
+from .state import AppState, ViewModel, build_view, elide, format_loop_label, parse_loop_count
 from .tooltip import Tooltip
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,7 @@ class App(ctk.CTk):
         self._playback_poll_id: str | None = None
         self._pending: str | None = None
         self._settings_dialog: SettingsDialog | None = None
+        self._recent_menu = tk.Menu(self, tearoff=0)
         #: Whether the macro in memory differs from what is on disk.
         self._dirty = False
 
@@ -311,7 +312,10 @@ class App(ctk.CTk):
 
     # -- recent files ---------------------------------------------------
     def _show_recent_menu(self) -> None:
-        menu = tk.Menu(self, tearoff=0)
+        # Reused rather than rebuilt: a fresh menu on every click would stay
+        # alive as a child of the window until the application closed.
+        menu = self._recent_menu
+        menu.delete(0, "end")
         recent = [path for path in self.settings.recent_files if Path(path).is_file()]
         if recent:
             for path in recent:
@@ -380,7 +384,7 @@ class App(ctk.CTk):
 
     def _render_macro_name(self) -> None:
         name = self.macro.name if self.macro.events else ""
-        shown = name if len(name) <= self.MAX_NAME_CHARS else f"{name[: self.MAX_NAME_CHARS - 1]}…"
+        shown = elide(name, self.MAX_NAME_CHARS)
         marker = " •" if self._dirty else ""
         self.macro_label.configure(text=f"{shown}{marker}")
         hint = "Unsaved changes" if self._dirty else ""
@@ -668,6 +672,7 @@ class App(ctk.CTk):
             filetypes=[("JSON", "*.json")],
             initialdir=self._initial_dir(),
             initialfile=f"{self.macro.name}.json",
+            parent=self,
         )
         if not path:
             return False
@@ -681,20 +686,26 @@ class App(ctk.CTk):
         self.macro.name = saved.stem
         self._dirty = False
         self._render()
-        self._notify(f"Saved to {saved.name}", "success")
+        self._notify(f"Saved to {elide(saved.name, 40)}", "success")
         return True
 
     def open_macro(self) -> None:
         if not self._confirm_discard("Opening a macro will replace it."):
             return
         path = filedialog.askopenfilename(
-            filetypes=[("JSON", "*.json")], initialdir=self._initial_dir()
+            filetypes=[("JSON", "*.json")], initialdir=self._initial_dir(), parent=self
         )
         if path:
-            self._load_path(path)
+            self._load_path(path, confirmed=True)
 
-    def _load_path(self, path: str) -> None:
-        if not self._confirm_discard("Opening a macro will replace it."):
+    def _load_path(self, path: str, *, confirmed: bool = False) -> None:
+        """Load ``path``, asking about unsaved work unless that already happened.
+
+        Choosing to discard does not clear the flag -- the recording is still
+        unsaved until something replaces it -- so without ``confirmed`` the
+        question would be asked a second time on the way through here.
+        """
+        if not confirmed and not self._confirm_discard("Opening a macro will replace it."):
             return
         try:
             macro = load_macro(path)

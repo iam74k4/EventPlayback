@@ -8,6 +8,7 @@ from eventplayback.ui.state import (
     STATUS_COLORS,
     AppState,
     build_view,
+    elide,
     format_info,
     format_loop_label,
     parse_loop_count,
@@ -108,3 +109,18 @@ def test_valid_input_produces_no_warning():
 
 def test_clamped_input_explains_itself():
     assert parse_loop_count(str(MAX_LOOP_COUNT + 1))[1] is not None
+
+
+@pytest.mark.parametrize(
+    "text, limit, expected",
+    [
+        ("short", 10, "short"),
+        ("exactly-10", 10, "exactly-10"),
+        ("eleven-char", 10, "eleven-ch…"),
+        ("", 5, ""),
+        ("abc", 1, "a…"),
+    ],
+)
+def test_elide_keeps_the_limit(text, limit, expected):
+    assert elide(text, limit) == expected
+    assert len(elide(text, limit)) <= max(limit, 2)

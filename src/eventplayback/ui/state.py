@@ -20,6 +20,7 @@ __all__ = [
     "ButtonView",
     "ViewModel",
     "build_view",
+    "elide",
     "format_info",
     "format_loop_label",
     "parse_loop_count",
@@ -71,6 +72,18 @@ class ViewModel:
     #: bar should be hidden because nothing quantifiable is happening.
     progress: float | None = None
     progress_color: Color = theme.PLAY
+
+
+def elide(text: str, limit: int) -> str:
+    """Shorten ``text`` to ``limit`` characters, ending with an ellipsis.
+
+    Used wherever a name arrives from outside the application. A file name has
+    no length the layout can count on, and wrapping cannot rescue a long run of
+    characters with nowhere to break in it.
+    """
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(1, limit - 1)]}…"
 
 
 def parse_loop_count(text: str) -> tuple[int, str | None]:
