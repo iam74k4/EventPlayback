@@ -26,16 +26,23 @@ DEFAULT_HOTKEYS: dict[str, str] = {
 
 SETTINGS_FILENAME = "settings.json"
 
+#: How many recently opened macros are remembered.
+MAX_RECENT_FILES = 8
+
 
 @dataclass
 class Settings:
     """Everything that survives a restart."""
 
     loop_count: int = 1
+    #: Pause inserted between repetitions, in seconds.
+    loop_delay: float = 0.0
     countdown_seconds: int = 3
     always_on_top: bool = True
     appearance_mode: str = "dark"
     last_directory: str = ""
+    #: Most recently opened macros, newest first.
+    recent_files: list[str] = field(default_factory=list)
     hotkeys: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_HOTKEYS))
     #: Withhold hotkeys from the focused application. Windows only, and needs
     #: the optional ``keyboard`` dependency; ignored elsewhere.
@@ -56,13 +63,21 @@ class Settings:
 
         return Settings(
             loop_count=_clamp_int(self.loop_count, 0, 100_000, 1),
+            loop_delay=_clamp_float(self.loop_delay, 0.0, 3600.0, 0.0),
             countdown_seconds=_clamp_int(self.countdown_seconds, 0, 60, 3),
             always_on_top=bool(self.always_on_top),
             appearance_mode=appearance,
             last_directory=directory,
+            recent_files=_clean_recent(self.recent_files),
             hotkeys=hotkeys,
             suppress_hotkeys=bool(self.suppress_hotkeys),
         )
+
+    def remember_file(self, path: str | os.PathLike[str]) -> None:
+        """Move ``path`` to the front of the recent list."""
+        entry = str(Path(path))
+        remaining = [item for item in self.recent_files if item != entry]
+        self.recent_files = [entry, *remaining][:MAX_RECENT_FILES]
 
     @property
     def reserved_keys(self) -> set[str]:
@@ -137,3 +152,42 @@ def _clamp_int(value: Any, low: int, high: int, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return max(low, min(high, number))
+
+
+def _clamp_float(value: Any, low: float, high: float, fallback: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if number != number:  # NaN, which no comparison would catch
+        return fallback
+    return max(low, min(high, number))
+
+
+def _clean_recent(value: Any) -> list[str]:
+    """Keep the readable entries, newest first, without duplicates.
+
+    Files that have since been deleted are dropped, the same way an unusable
+    ``last_directory`` is: offering a menu entry that can only fail is worse
+    than a shorter menu.
+    """
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    kept: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        entry = str(Path(item))
+        if entry in seen:
+            continue
+        seen.add(entry)
+        try:
+            if not Path(entry).is_file():
+                continue
+        except OSError:  # an unreachable network path, for instance
+            continue
+        kept.append(entry)
+        if len(kept) >= MAX_RECENT_FILES:
+            break
+    return kept
