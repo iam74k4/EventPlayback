@@ -10,13 +10,35 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from .backends.base import Clock, InputSynthesizer, RealClock
 from .events import Event, EventType
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PlaybackEngine", "Player"]
+__all__ = ["PlaybackEngine", "PlaybackProgress", "Player"]
+
+
+@dataclass(frozen=True)
+class PlaybackProgress:
+    """Where a run has got to, for display purposes only."""
+
+    #: The repetition being played, counting from 1. ``0`` before the first.
+    loop: int = 0
+    #: Repetitions requested; ``0`` means until stopped.
+    loops: int = 0
+    #: Seconds into the current repetition.
+    elapsed: float = 0.0
+    #: Length of a single repetition.
+    duration: float = 0.0
+
+    @property
+    def fraction(self) -> float:
+        """Position within the current repetition, from ``0.0`` to ``1.0``."""
+        if self.duration <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.elapsed / self.duration))
 
 
 class PlaybackEngine:
@@ -28,10 +50,14 @@ class PlaybackEngine:
         clock: Clock | None = None,
         *,
         on_error: Callable[[str], None] | None = None,
+        on_progress: Callable[[int, float], None] | None = None,
     ) -> None:
         self._synth = synthesizer
         self._clock = clock or RealClock()
         self.on_error = on_error
+        #: Called with the repetition number and how far into it the run is.
+        #: Purely informational, so it must never raise into the timing loop.
+        self.on_progress = on_progress
         self._held_keys: set[str] = set()
         self._held_buttons: set[str] = set()
 
@@ -66,7 +92,7 @@ class PlaybackEngine:
                 iteration = 0
                 while not cancel.is_set():
                     iteration += 1
-                    if not self._play_once(events, cancel):
+                    if not self._play_once(events, cancel, iteration):
                         completed = False
                         break
                     if loops > 0 and iteration >= loops:
@@ -81,7 +107,7 @@ class PlaybackEngine:
             self.release_all()
         return completed and not cancel.is_set()
 
-    def _play_once(self, events: Sequence[Event], cancel: threading.Event) -> bool:
+    def _play_once(self, events: Sequence[Event], cancel: threading.Event, iteration: int = 1) -> bool:
         # Anchor on the first event rather than on zero, so a macro whose first
         # action happens two seconds in does not re-insert that gap every loop.
         origin = events[0].timestamp
@@ -94,7 +120,17 @@ class PlaybackEngine:
             if remaining > 0 and self._clock.wait(remaining, cancel):
                 return False
             self._dispatch(event)
+            self._report_progress(iteration, event.timestamp - origin)
         return not cancel.is_set()
+
+    def _report_progress(self, iteration: int, elapsed: float) -> None:
+        if self.on_progress is None:
+            return
+        try:
+            self.on_progress(iteration, elapsed)
+        except Exception:
+            # A broken progress display must not derail the replay itself.
+            logger.debug("Progress callback failed", exc_info=True)
 
     def _dispatch(self, event: Event) -> None:
         try:
@@ -153,8 +189,12 @@ class Player:
         synthesizer: InputSynthesizer,
         clock: Clock | None = None,
     ) -> None:
-        self._engine = PlaybackEngine(synthesizer, clock, on_error=self._report_error)
+        self._engine = PlaybackEngine(
+            synthesizer, clock, on_error=self._report_error, on_progress=self._note_progress
+        )
         self._events: list[Event] = []
+        self._duration = 0.0
+        self._progress = PlaybackProgress()
         self._loop_count = 1
         self._loop_delay = 0.0
         self._playing = False
@@ -167,6 +207,20 @@ class Player:
     def set_events(self, events: Sequence[Event]) -> None:
         with self._lock:
             self._events = list(events)
+            timestamps = [event.timestamp for event in self._events]
+            # One repetition spans first event to last, matching the way
+            # playback anchors itself rather than starting from zero.
+            self._duration = (max(timestamps) - min(timestamps)) if timestamps else 0.0
+
+    def progress(self) -> PlaybackProgress:
+        """The latest position of the run, safe to call from another thread.
+
+        Rebinding the snapshot is atomic, so the reader always sees a complete
+        one. Polling this beats a callback per event: a macro can dispatch
+        thousands of events a second, and marshalling each onto the UI thread
+        would swamp it for the sake of a bar that moves sixty times a second.
+        """
+        return self._progress
 
     def set_loop(self, count: int, *, delay: float = 0.0) -> None:
         """Set the repetition count (``0`` = until stopped) and inter-loop gap."""
@@ -181,6 +235,9 @@ class Player:
                 return False
             self._playing = True
             self._cancel = threading.Event()
+            self._progress = PlaybackProgress(
+                loop=1, loops=self._loop_count, elapsed=0.0, duration=self._duration
+            )
             events, loops, delay, cancel = (
                 list(self._events),
                 self._loop_count,
@@ -223,6 +280,14 @@ class Player:
                 self._thread = None
         if completed and self.on_complete is not None:
             self.on_complete()
+
+    def _note_progress(self, loop: int, elapsed: float) -> None:
+        # Called from the playback thread for every dispatched event. Building
+        # the snapshot here and rebinding it in one go keeps ``progress`` free
+        # of locking, which matters because this runs inside the timing loop.
+        self._progress = PlaybackProgress(
+            loop=loop, loops=self._loop_count, elapsed=elapsed, duration=self._duration
+        )
 
     def _report_error(self, message: str) -> None:
         if self.on_error is not None:
