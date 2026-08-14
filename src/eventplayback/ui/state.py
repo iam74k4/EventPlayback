@@ -1,7 +1,8 @@
 """How application state maps onto what the window shows.
 
 Deliberately free of any toolkit import: ``build_view`` is a pure function, so
-the state/appearance rules can be unit tested without opening a window.
+the state/appearance rules can be unit tested without opening a window. The
+colours themselves live in :mod:`eventplayback.ui.theme`.
 """
 
 from __future__ import annotations
@@ -9,33 +10,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from . import theme
+from .theme import Color
+
 __all__ = [
-    "ACCENTS",
     "MAX_LOOP_COUNT",
+    "STATUS_COLORS",
     "AppState",
     "ButtonView",
     "ViewModel",
     "build_view",
+    "elide",
     "format_info",
+    "format_loop_label",
     "parse_loop_count",
 ]
 
 #: Highest repetition count accepted from the loop field. ``0`` means infinite.
 MAX_LOOP_COUNT = 10_000
-
-_IDLE = "#2b2b2b"
-_DISABLED = "#7f8c8d"
-_RECORD = "#c0392b"
-_PLAY = "#2980b9"
-_STOP = "#e74c3c"
-
-#: Window background per state, used for the blinking status indication.
-ACCENTS = {
-    "idle": _IDLE,
-    "countdown": "#f39c12",
-    "recording": "#e74c3c",
-    "playing": "#27ae60",
-}
 
 
 class AppState(Enum):
@@ -45,10 +37,21 @@ class AppState(Enum):
     PLAYING = "playing"
 
 
+#: The indicator colour for each state. Replaces the old full-window flash:
+#: a small dot carries the same information without strobing the whole UI.
+STATUS_COLORS: dict[AppState, Color] = {
+    AppState.IDLE: theme.STATUS_IDLE,
+    AppState.COUNTDOWN: theme.STATUS_COUNTDOWN,
+    AppState.RECORDING: theme.STATUS_RECORDING,
+    AppState.PLAYING: theme.STATUS_PLAYING,
+}
+
+
 @dataclass(frozen=True)
 class ButtonView:
     enabled: bool
-    color: str
+    color: Color
+    hover: Color
 
     @property
     def tk_state(self) -> str:
@@ -59,11 +62,28 @@ class ButtonView:
 class ViewModel:
     status: str
     info: str
-    accent: str
+    #: Colour of the state indicator, already faded if this is a dim pulse.
+    dot: Color
     record: ButtonView
     stop: ButtonView
     play: ButtonView
     loop_enabled: bool
+    #: ``0.0``-``1.0`` while there is measurable progress, ``None`` when the
+    #: bar should be hidden because nothing quantifiable is happening.
+    progress: float | None = None
+    progress_color: Color = theme.PLAY
+
+
+def elide(text: str, limit: int) -> str:
+    """Shorten ``text`` to ``limit`` characters, ending with an ellipsis.
+
+    Used wherever a name arrives from outside the application. A file name has
+    no length the layout can count on, and wrapping cannot rescue a long run of
+    characters with nowhere to break in it.
+    """
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(1, limit - 1)]}…"
 
 
 def parse_loop_count(text: str) -> tuple[int, str | None]:
@@ -77,6 +97,8 @@ def parse_loop_count(text: str) -> tuple[int, str | None]:
     raw = (text or "").strip()
     if not raw:
         return 1, None
+    if raw == "∞":
+        return 0, None
     try:
         value = int(raw)
     except ValueError:
@@ -91,8 +113,13 @@ def parse_loop_count(text: str) -> tuple[int, str | None]:
 def format_info(*, event_count: int, duration: float, recording: bool) -> str:
     plural = "event" if event_count == 1 else "events"
     if recording:
-        return f"{event_count} {plural} | Recording..."
-    return f"{event_count} {plural} | {duration:.1f}s"
+        return f"{event_count} {plural} · recording"
+    return f"{event_count} {plural} · {duration:.1f}s"
+
+
+def format_loop_label(current: int, total: int) -> str:
+    """Describe which repetition is running, e.g. ``loop 2/5`` or ``loop 2/∞``."""
+    return f"loop {current}/{'∞' if total <= 0 else total}"
 
 
 def build_view(
@@ -102,36 +129,52 @@ def build_view(
     event_count: int,
     duration: float,
     countdown: int = 0,
-    blink_on: bool = True,
+    countdown_total: int = 0,
+    pulse: float = 0.0,
+    progress: float | None = None,
+    detail: str = "",
 ) -> ViewModel:
     """Derive every visible property of the window from the current state."""
     recording = state is AppState.RECORDING
     info = format_info(event_count=event_count, duration=duration, recording=recording)
+    if detail:
+        info = f"{info} · {detail}"
 
     if state is AppState.IDLE:
         return ViewModel(
             status="Idle",
             info=info,
-            accent=ACCENTS["idle"],
-            record=ButtonView(True, _RECORD),
-            stop=ButtonView(False, _DISABLED),
-            play=ButtonView(has_events, _PLAY if has_events else _DISABLED),
+            dot=theme.STATUS_IDLE,
+            record=ButtonView(True, theme.RECORD, theme.RECORD_HOVER),
+            stop=ButtonView(False, theme.DISABLED, theme.DISABLED),
+            play=ButtonView(
+                has_events,
+                theme.PLAY if has_events else theme.DISABLED,
+                theme.PLAY_HOVER if has_events else theme.DISABLED,
+            ),
             loop_enabled=True,
+            progress=None,
         )
 
     if state is AppState.COUNTDOWN:
-        status = str(countdown) if countdown > 0 else "Starting"
-    elif state is AppState.RECORDING:
-        status = "● Recording"
+        status = f"Starting in {countdown}" if countdown > 0 else "Starting"
+        # Fills up as the wait runs out, so the bar reads as "almost there".
+        if progress is None and countdown_total > 0:
+            progress = max(0.0, min(1.0, (countdown_total - countdown) / countdown_total))
+    elif recording:
+        status = "Recording"
     else:
-        status = "▶ Playing"
+        status = "Playing"
 
+    color = STATUS_COLORS[state]
     return ViewModel(
         status=status,
         info=info,
-        accent=ACCENTS[state.value] if blink_on else ACCENTS["idle"],
-        record=ButtonView(False, _DISABLED),
-        stop=ButtonView(True, _STOP),
-        play=ButtonView(False, _DISABLED),
+        dot=color if pulse <= 0 else theme.dim(color, pulse),
+        record=ButtonView(False, theme.DISABLED, theme.DISABLED),
+        stop=ButtonView(True, theme.STOP, theme.STOP_HOVER),
+        play=ButtonView(False, theme.DISABLED, theme.DISABLED),
         loop_enabled=False,
+        progress=progress,
+        progress_color=color,
     )

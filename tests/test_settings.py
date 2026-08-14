@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from eventplayback.services.settings import DEFAULT_HOTKEYS, Settings
+from eventplayback.services.settings import DEFAULT_HOTKEYS, MAX_RECENT_FILES, Settings
 
 
 def test_defaults_round_trip_through_a_file(tmp_path):
@@ -66,3 +66,45 @@ def test_save_creates_missing_directories(tmp_path):
     path = tmp_path / "nested" / "settings.json"
     assert Settings().save(path)
     assert path.is_file()
+
+
+def test_loop_delay_is_clamped_and_survives_a_round_trip(tmp_path):
+    path = tmp_path / "settings.json"
+    assert Settings(loop_delay=2.5).save(path)
+    assert Settings.load(path).loop_delay == 2.5
+    assert Settings(loop_delay=-4).normalized().loop_delay == 0.0
+    assert Settings(loop_delay="soon").normalized().loop_delay == 0.0
+    assert Settings(loop_delay=float("nan")).normalized().loop_delay == 0.0
+
+
+def test_recent_files_keep_the_newest_first_without_duplicates(tmp_path):
+    first, second = tmp_path / "a.json", tmp_path / "b.json"
+    for item in (first, second):
+        item.write_text("{}", encoding="utf-8")
+
+    settings = Settings()
+    settings.remember_file(first)
+    settings.remember_file(second)
+    settings.remember_file(first)
+    assert settings.recent_files == [str(first), str(second)]
+
+
+def test_recent_files_drop_entries_that_no_longer_exist(tmp_path):
+    present = tmp_path / "here.json"
+    present.write_text("{}", encoding="utf-8")
+    settings = Settings(recent_files=[str(tmp_path / "gone.json"), str(present), 7])
+    assert settings.normalized().recent_files == [str(present)]
+
+
+def test_recent_files_are_capped(tmp_path):
+    paths = []
+    for index in range(MAX_RECENT_FILES + 3):
+        item = tmp_path / f"macro{index}.json"
+        item.write_text("{}", encoding="utf-8")
+        paths.append(item)
+
+    settings = Settings()
+    for item in paths:
+        settings.remember_file(item)
+    assert len(settings.recent_files) == MAX_RECENT_FILES
+    assert settings.recent_files[0] == str(paths[-1])

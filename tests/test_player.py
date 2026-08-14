@@ -200,3 +200,48 @@ def test_stop_before_start_is_safe():
     player = Player(FakeSynthesizer(), FakeClock())
     player.stop()
     assert not player.is_playing()
+
+
+def test_progress_reports_the_position_within_a_repetition(engine_setup):
+    synth, clock, engine = engine_setup
+    seen: list[tuple[int, float]] = []
+    engine.on_progress = lambda loop, elapsed: seen.append((loop, elapsed))
+    engine.run([key(0.0, "a", True), key(0.5, "a", False)], 2, threading.Event())
+    assert seen == [(1, 0.0), (1, 0.5), (2, 0.0), (2, 0.5)]
+
+
+def test_a_failing_progress_callback_does_not_stop_playback(engine_setup):
+    synth, _clock, engine = engine_setup
+
+    def explode(_loop: int, _elapsed: float) -> None:
+        raise RuntimeError("display gone")
+
+    engine.on_progress = explode
+    assert engine.run([key(0.0, "a", True), key(0.1, "a", False)], 1, threading.Event())
+    assert len(synth.actions) == 2
+
+
+def test_player_exposes_a_progress_snapshot():
+    player = Player(FakeSynthesizer(), FakeClock())
+    assert player.progress().loop == 0
+
+    player.set_events([key(0.0, "a", True), key(2.0, "a", False)])
+    player.set_loop(3)
+    done = threading.Event()
+    player.on_complete = done.set
+    assert player.start()
+    assert done.wait(timeout=5)
+
+    final = player.progress()
+    assert final.duration == 2.0
+    assert final.loops == 3
+    assert final.loop == 3
+    assert final.fraction == 1.0
+
+
+def test_progress_fraction_is_zero_for_an_instant_macro():
+    player = Player(FakeSynthesizer(), FakeClock())
+    player.set_events([key(1.5, "a", True)])
+    assert player.progress().fraction == 0.0
+    player.set_events([])
+    assert player.progress().fraction == 0.0
