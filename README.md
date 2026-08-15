@@ -364,16 +364,25 @@ pyinstaller --onefile --windowed --paths src --name EventPlayback main.py
 
 ### Automatic Build (GitHub Actions)
 
-Every push and pull request runs lint and tests. When you push a tag, the
-workflow additionally builds and uploads the exe file to GitHub Releases.
+Every push and pull request runs lint and tests. Releasing builds the exe and
+publishes it to GitHub Releases, and can be started from either end.
+
+**From a tag**, the usual way:
 
 ```bash
-# Create and push a tag
-git tag v1.0.0
-git push origin v1.0.0
+git tag -a v1.2.0 -m "EventPlayback v1.2.0"
+git push origin v1.2.0
 ```
 
-Alternatively, you can manually run the workflow from the Actions tab on GitHub.
+**From the Actions tab**, for anywhere that cannot push a tag: run the *Build
+and Release* workflow, choose the branch, and enter the version (`1.2.0`, no
+leading `v`). The workflow creates the tag itself once the build succeeds, then
+publishes the release. Leave the version empty for a plain build with no
+release.
+
+Either way the version must match `pyproject.toml` on the ref being released;
+the workflow stops if it does not, which is what catches a release started from
+a branch that never got the version bump.
 
 ## License
 

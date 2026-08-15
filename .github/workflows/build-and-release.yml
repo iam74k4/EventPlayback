@@ -7,7 +7,12 @@ on:
     tags:
       - 'v*'  # Release on tags like v1.0.0
   pull_request:
-  workflow_dispatch:  # Manual execution also available
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (e.g. 1.2.0). Leave empty to build without releasing.'
+        required: false
+        default: ''
 
 jobs:
   test:
@@ -71,15 +76,27 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
-    - name: Extract version from tag or set default
+    # A release comes from one of two places: a pushed tag, or this workflow
+    # being run by hand with a version. The second exists because the tag is
+    # what some callers cannot create; the workflow's own token can.
+    - name: Decide the version, and whether this run releases
       id: version
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
         if ($env:GITHUB_REF -like 'refs/tags/v*') {
           $version = $env:GITHUB_REF -replace 'refs/tags/v', ''
+          $release = 'true'
+        } elseif ($env:INPUT_VERSION) {
+          $version = $env:INPUT_VERSION.Trim().TrimStart('v')
+          $release = 'true'
         } else {
           $version = "dev"
+          $release = 'false'
         }
         echo "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        echo "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "version=$version release=$release"
       shell: pwsh
 
     - name: Validate version format
@@ -97,6 +114,27 @@ jobs:
           exit 1
         }
         Write-Host "Version format validated: $version"
+      shell: pwsh
+
+    # Catches the mistake this indirection makes easy: releasing a commit whose
+    # pyproject.toml still says something else, because the ref chosen for the
+    # run was not the one carrying the version bump.
+    - name: Check the version against pyproject.toml
+      if: steps.version.outputs.release == 'true'
+      run: |
+        $version = "${{ steps.version.outputs.version }}"
+        $match = Select-String -Path pyproject.toml -Pattern '^version = "(.+)"' | Select-Object -First 1
+        if (-not $match) {
+          Write-Error "No version found in pyproject.toml"
+          exit 1
+        }
+        $declared = $match.Matches[0].Groups[1].Value
+        if ($declared -ne $version) {
+          Write-Error "Releasing $version but pyproject.toml on $env:GITHUB_REF_NAME says $declared"
+          Write-Error "Run this from a ref whose version matches, or bump pyproject.toml first."
+          exit 1
+        }
+        Write-Host "pyproject.toml agrees: $declared"
       shell: pwsh
 
     - name: Build executable
@@ -130,22 +168,48 @@ jobs:
         retention-days: 30
         if-no-files-found: error
 
+    # Last thing before the release: a tag pushed ahead of the build would
+    # survive a build failure and point at a version that was never shipped.
+    - name: Create the tag
+      if: github.event_name == 'workflow_dispatch' && steps.version.outputs.release == 'true'
+      run: |
+        $tag = "v${{ steps.version.outputs.version }}"
+        git ls-remote --exit-code --tags origin "refs/tags/$tag" *> $null
+        if ($LASTEXITCODE -eq 0) {
+          Write-Error "$tag already exists. Delete it first, or pick another version."
+          exit 1
+        }
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git tag -a $tag -m "EventPlayback $tag"
+        git push origin $tag
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Could not push $tag"
+          exit 1
+        }
+        Write-Host "Created $tag at $env:GITHUB_SHA"
+      shell: pwsh
+
     - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
+      if: steps.version.outputs.release == 'true'
       uses: softprops/action-gh-release@v2
       with:
         files: dist/EventPlayback.exe
         fail_on_unmatched_files: true
-        tag_name: ${{ github.ref_name }}
+        # Not github.ref_name: on a manual run that is the branch, while the
+        # release belongs to the tag the run just created.
+        tag_name: v${{ steps.version.outputs.version }}
         name: Release ${{ steps.version.outputs.version }}
+        # The changes are listed from the commits and pull requests since the
+        # last release, which beats the fixed "Automated build release" line
+        # that said nothing about what was in the download.
+        generate_release_notes: true
         body: |
-          ## EventPlayback ${{ steps.version.outputs.version }}
-
           ### Download
-          - Download `EventPlayback.exe` and run it
 
-          ### Changes
-          - Automated build release
+          `EventPlayback.exe` below. Windows only; run from source on macOS and
+          Linux. See the [README](https://github.com/iam74k4/EventPlayback#readme)
+          for the permissions each platform needs.
         draft: false
         prerelease: false
       env:
