@@ -2,25 +2,66 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'  # Release on tags like v1.0.0
-  workflow_dispatch:  # Manual execution also available
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (e.g. 1.2.0). Leave empty to build without releasing.'
+        required: false
+        default: ''
 
 jobs:
-  build:
-    runs-on: windows-latest
-    permissions:
-      contents: write  # Required for uploading to Releases
-    
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+
+    # The test suite covers eventplayback.core, .services and .ui.state, none of
+    # which import pynput or customtkinter, so no display server is needed here.
+    - name: Install test dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest ruff
+
+    - name: Lint
+      run: ruff check .
+
+    - name: Test
+      run: pytest -q
+
+  build:
+    name: Build Windows executable
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write  # Required for uploading to Releases
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        
+
     - name: Cache pip dependencies
       uses: actions/cache@v4
       with:
@@ -28,24 +69,36 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
-          
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
-        
-    - name: Extract version from tag or set default
+
+    # A release comes from one of two places: a pushed tag, or this workflow
+    # being run by hand with a version. The second exists because the tag is
+    # what some callers cannot create; the workflow's own token can.
+    - name: Decide the version, and whether this run releases
       id: version
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
         if ($env:GITHUB_REF -like 'refs/tags/v*') {
           $version = $env:GITHUB_REF -replace 'refs/tags/v', ''
+          $release = 'true'
+        } elseif ($env:INPUT_VERSION) {
+          $version = $env:INPUT_VERSION.Trim().TrimStart('v')
+          $release = 'true'
         } else {
           $version = "dev"
+          $release = 'false'
         }
         echo "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        echo "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "version=$version release=$release"
       shell: pwsh
-      
+
     - name: Validate version format
       run: |
         $version = "${{ steps.version.outputs.version }}"
@@ -60,26 +113,36 @@ jobs:
           Write-Error "Expected format: MAJOR.MINOR.PATCH (e.g., 1.0.0)"
           exit 1
         }
-        # Validate version components are non-negative
-        $parts = $version -split '\.'
-        $major = [int]$parts[0]
-        $minor = [int]$parts[1]
-        $patch = [int]$parts[2]
-        if ($major -lt 0 -or $minor -lt 0 -or $patch -lt 0) {
-          Write-Error "Version components must be non-negative: $version"
-          exit 1
-        }
         Write-Host "Version format validated: $version"
       shell: pwsh
-      
-    - name: Build executable
+
+    # Catches the mistake this indirection makes easy: releasing a commit whose
+    # pyproject.toml still says something else, because the ref chosen for the
+    # run was not the one carrying the version bump.
+    - name: Check the version against pyproject.toml
+      if: steps.version.outputs.release == 'true'
       run: |
         $version = "${{ steps.version.outputs.version }}"
-        $env:EVENTPLAYBACK_VERSION = $version
-        pyinstaller --onefile --windowed --name EventPlayback main.py
+        $match = Select-String -Path pyproject.toml -Pattern '^version = "(.+)"' | Select-Object -First 1
+        if (-not $match) {
+          Write-Error "No version found in pyproject.toml"
+          exit 1
+        }
+        $declared = $match.Matches[0].Groups[1].Value
+        if ($declared -ne $version) {
+          Write-Error "Releasing $version but pyproject.toml on $env:GITHUB_REF_NAME says $declared"
+          Write-Error "Run this from a ref whose version matches, or bump pyproject.toml first."
+          exit 1
+        }
+        Write-Host "pyproject.toml agrees: $declared"
+      shell: pwsh
+
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --windowed --paths src --name EventPlayback main.py
       env:
         EVENTPLAYBACK_VERSION: ${{ steps.version.outputs.version }}
-        
+
     - name: Verify executable
       run: |
         $exe = "dist/EventPlayback.exe"
@@ -96,7 +159,7 @@ jobs:
           Write-Error "Executable file is too small, build may have failed!"
           exit 1
         }
-        
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -104,25 +167,50 @@ jobs:
         path: dist/EventPlayback.exe
         retention-days: 30
         if-no-files-found: error
-        
+
+    # Last thing before the release: a tag pushed ahead of the build would
+    # survive a build failure and point at a version that was never shipped.
+    - name: Create the tag
+      if: github.event_name == 'workflow_dispatch' && steps.version.outputs.release == 'true'
+      run: |
+        $tag = "v${{ steps.version.outputs.version }}"
+        git ls-remote --exit-code --tags origin "refs/tags/$tag" *> $null
+        if ($LASTEXITCODE -eq 0) {
+          Write-Error "$tag already exists. Delete it first, or pick another version."
+          exit 1
+        }
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git tag -a $tag -m "EventPlayback $tag"
+        git push origin $tag
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Could not push $tag"
+          exit 1
+        }
+        Write-Host "Created $tag at $env:GITHUB_SHA"
+      shell: pwsh
+
     - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
+      if: steps.version.outputs.release == 'true'
       uses: softprops/action-gh-release@v2
       with:
         files: dist/EventPlayback.exe
         fail_on_unmatched_files: true
-        tag_name: ${{ github.ref_name }}
+        # Not github.ref_name: on a manual run that is the branch, while the
+        # release belongs to the tag the run just created.
+        tag_name: v${{ steps.version.outputs.version }}
         name: Release ${{ steps.version.outputs.version }}
+        # The changes are listed from the commits and pull requests since the
+        # last release, which beats the fixed "Automated build release" line
+        # that said nothing about what was in the download.
+        generate_release_notes: true
         body: |
-          ## EventPlayback ${{ steps.version.outputs.version }}
-          
           ### Download
-          - Download `EventPlayback.exe` and run it
-          
-          ### Changes
-          - Automated build release
+
+          `EventPlayback.exe` below. Windows only; run from source on macOS and
+          Linux. See the [README](https://github.com/iam74k4/EventPlayback#readme)
+          for the permissions each platform needs.
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eventplayback"
+version = "1.2.0"
+description = "A lightweight application for recording and playing back mouse and keyboard input."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pynput>=1.7.6",
+    "customtkinter>=5.2.0",
+]
+
+[project.optional-dependencies]
+# Lets hotkeys be withheld from the focused application. Windows only: the
+# library needs root elsewhere, and pynput already covers the rest.
+suppress = [
+    "keyboard>=0.13.5; sys_platform == 'win32'",
+]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.5",
+]
+
+[project.gui-scripts]
+eventplayback = "eventplayback.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/iam74k4/EventPlayback"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
